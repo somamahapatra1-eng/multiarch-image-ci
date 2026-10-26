@@ -1,0 +1,59 @@
+# Cloud-agnostic multi-arch build.
+# GitLab reads .gitlab-ci.yml by default. Point the project CI config path at gitci.yaml.
+stages:
+  - build
+  - manifest
+
+variables:
+  REGISTRY: $CI_REGISTRY
+  IMAGE: $CI_REGISTRY_IMAGE
+  REGISTRY_USER: $CI_REGISTRY_USER
+  REGISTRY_PASSWORD: $CI_REGISTRY_PASSWORD
+
+.docker:
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+
+.build:
+  extends: .docker
+  stage: build
+  script:
+    - docker build
+        --platform "linux/${ARCH}"
+        --provenance=false
+        --sbom=false
+        -t "${IMAGE}:${CI_COMMIT_SHA}-${ARCH}"
+        .
+    - docker push "${IMAGE}:${CI_COMMIT_SHA}-${ARCH}"
+
+build:amd64:
+  extends: .build
+  tags: [linux-amd64]
+  variables:
+    ARCH: amd64
+
+build:arm64:
+  extends: .build
+  tags: [linux-arm64]
+  variables:
+    ARCH: arm64
+
+manifest:
+  extends: .docker
+  stage: manifest
+  tags: [linux-amd64]
+  needs: [build:amd64, build:arm64]
+  script:
+    - docker buildx imagetools create
+        -t "${IMAGE}:${CI_COMMIT_SHA}"
+        -t "${IMAGE}:${CI_COMMIT_REF_SLUG}"
+        "${IMAGE}:${CI_COMMIT_SHA}-amd64"
+        "${IMAGE}:${CI_COMMIT_SHA}-arm64"
+    - docker buildx imagetools inspect "${IMAGE}:${CI_COMMIT_SHA}"
